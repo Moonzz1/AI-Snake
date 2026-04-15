@@ -44,4 +44,4 @@ class DQNAgent:
         self.optimizer.step()
 
         # Décroissance de l'exploration
-        self.epsilon = max(0.01, self.epsilon * 0.995)
+        self.epsilon = max(0.001, self.epsilon * 0.9995)

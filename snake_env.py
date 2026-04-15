@@ -45,25 +45,40 @@ class SnakeEnv:
     # Méthodes internes (préfixe _ par convention)
     # ──────────────────────────────────────────
 
-    def _get_state(self):           # ← ICI, méthode de la classe
-        head = self.snake[0]
-        dx, dy = self.direction
+    def _get_state(self):
+        head      = self.snake[0]
+        dx, dy    = self.direction
+        total     = (self.w // BLOCK) * (self.h // BLOCK)  # nb total de cases
 
-        danger_straight = self._collision_at((head[0]+dx,  head[1]+dy))
-        danger_right    = self._collision_at((head[0]-dy,  head[1]+dx))
-        danger_left     = self._collision_at((head[0]+dy,  head[1]-dx))
+        # Cases candidates dans chaque direction
+        next_straight = (head[0]+dx,  head[1]+dy)
+        next_right    = (head[0]-dy,  head[1]+dx)
+        next_left     = (head[0]+dy,  head[1]-dx)
 
+        # Dangers immédiats (booléens)
+        danger_s = self._collision_at(next_straight)
+        danger_r = self._collision_at(next_right)
+        danger_l = self._collision_at(next_left)
+
+        # Espace libre normalisé (0.0 → piège total, 1.0 → tout ouvert)
+        space_s = self._flood_fill(next_straight) / total
+        space_r = self._flood_fill(next_right)    / total
+        space_l = self._flood_fill(next_left)     / total
+
+        # Direction actuelle (one-hot)
         dir_r = dx > 0;  dir_l = dx < 0
         dir_u = dy < 0;  dir_d = dy > 0
 
+        # Position relative de la nourriture
         food_l = self.food[0] < head[0];  food_r = self.food[0] > head[0]
         food_u = self.food[1] < head[1];  food_d = self.food[1] > head[1]
 
         return np.array([
-            danger_straight, danger_right, danger_left,
-            dir_r, dir_l, dir_u, dir_d,
-            food_l, food_r, food_u, food_d
-        ], dtype=float)
+            danger_s, danger_r, danger_l,         # 3 booléens
+            space_s,  space_r,  space_l,          # 3 flottants ← NOUVEAU
+            dir_r, dir_l, dir_u, dir_d,           # 4 booléens
+            food_l, food_r, food_u, food_d        # 4 booléens
+        ], dtype=float)                            # 14 valeurs au total
 
     def _collision(self):
         head = self.snake[0]
@@ -79,6 +94,33 @@ class SnakeEnv:
             or pos[0] < 0 or pos[0] >= self.w
             or pos[1] < 0 or pos[1] >= self.h
         )
+    
+    def _flood_fill(self, start):
+        """Compte les cases accessibles en BFS depuis 'start'."""
+        # Si le point de départ est déjà un mur, retourne 0
+        if self._collision_at(start):
+            return 0
+
+        body    = set(self.snake)       # tout le corps est un obstacle
+        visited = set()
+        queue   = [start]
+
+        while queue:
+            pos = queue.pop(0)
+            if pos in visited:
+                continue
+            x, y = pos
+            # Vérifie les 4 cases voisines
+            for voisin in [(x+BLOCK, y), (x-BLOCK, y), (x, y+BLOCK), (x, y-BLOCK)]:
+                vx, vy = voisin
+                if (voisin not in visited
+                    and 0 <= vx < self.w
+                    and 0 <= vy < self.h
+                    and voisin not in body):
+                    queue.append(voisin)
+            visited.add(pos)
+
+        return len(visited)
 
     def _next_head(self):
         hx, hy = self.snake[0]
@@ -108,4 +150,4 @@ class SnakeEnv:
             pygame.draw.rect(self.screen, (0, 200, 0), (*seg, BLOCK, BLOCK))
         pygame.draw.rect(self.screen, (200, 0, 0), (*self.food, BLOCK, BLOCK))
         pygame.display.flip()
-        self.clock.tick(30)
+        self.clock.tick(60)

@@ -1,7 +1,7 @@
 from collections import deque
 import random, torch, numpy as np
 import torch.nn as nn
-from model import QNet
+from model import DuelingQNet
 
 class DQNAgent:
     def __init__(self):
@@ -9,8 +9,8 @@ class DQNAgent:
         self.epsilon = 1.0       # exploration initiale
         self.gamma   = 0.9       # discount factor
         self.lr      = 0.001
-        self.model   = QNet()
-        self.target  = QNet()    # réseau cible stable
+        self.model   = DuelingQNet()
+        self.target  = DuelingQNet()    # réseau cible stable
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
     def choose_action(self, state):
@@ -35,8 +35,12 @@ class DQNAgent:
 
         current_q  = self.model(states).gather(1, torch.LongTensor(actions).unsqueeze(1))
         with torch.no_grad():
-            max_next_q = self.target(next_states).max(1)[0]
-            target_q   = rewards + self.gamma * max_next_q * (~dones)
+            # 1. Le modèle principal choisit la meilleure action
+            best_actions = self.model(next_states).argmax(1, keepdim=True)
+            # 2. Le réseau cible évalue cette action (plus stable)
+            max_next_q   = self.target(next_states).gather(1, best_actions).squeeze(1)
+
+            target_q = rewards + self.gamma * max_next_q * (~dones)
 
         loss = nn.MSELoss()(current_q.squeeze(), target_q)
         self.optimizer.zero_grad()
@@ -44,4 +48,4 @@ class DQNAgent:
         self.optimizer.step()
 
         # Décroissance de l'exploration
-        self.epsilon = max(0.001, self.epsilon * 0.9995)
+        self.epsilon = max(0.01, self.epsilon * 0.9995)

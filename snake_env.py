@@ -24,11 +24,13 @@ class SnakeEnv:
         return self._get_state()         # ← appelé ici
 
     def step(self, action):
+        old_head = self.snake[0]
         self._change_direction(action)
         self.snake.insert(0, self._next_head())
         self.frame_iter += 1
 
         reward, done = 0, False
+
         if self._collision() or self.frame_iter > 100 * len(self.snake):
             return self._get_state(), -10, True
 
@@ -38,8 +40,12 @@ class SnakeEnv:
             self.food = self._place_food()
         else:
             self.snake.pop()
+            # Récompense de progression (distance de Manhattan)
+            dist_avant = abs(old_head[0]-self.food[0]) + abs(old_head[1]-self.food[1])
+            dist_après = abs(self.snake[0][0]-self.food[0]) + abs(self.snake[0][1]-self.food[1])
+            reward = 0.1 if dist_après < dist_avant else -0.1
 
-        return self._get_state(), reward, done  # ← appelé ici aussi
+        return self._get_state(), reward, done
 
     # ──────────────────────────────────────────
     # Méthodes internes (préfixe _ par convention)

@@ -2,23 +2,29 @@
 
 import pygame
 import torch
-from collections import deque
 import numpy as np
+from collections import deque
 from snake_env import SnakeEnv
 from agent import DQNAgent
+from nn_visualizer import NNVisualizer
 
 # ────────────────────────────────────────────
 # Configuration
 # ────────────────────────────────────────────
 EPISODES     = 2000
-HEADLESS     = False  # True = pas de fenêtre, entraînement plus rapide
-RENDER_EVERY = 50     # Affiche 1 épisode sur RENDER_EVERY en mode HEADLESS
+HEADLESS     = False   # False = fenêtre + visualiseur activé
+VIS_WIDTH    = 600     # largeur du panneau neurones (0 = désactivé)
+RENDER_EVERY = 1       # 1 = toujours afficher; augmenter pour accélérer
 
-env   = SnakeEnv(headless=HEADLESS)
+env   = SnakeEnv(headless=HEADLESS, vis_width=VIS_WIDTH)
 agent = DQNAgent()
-record = 0
 
-# Fenêtre glissante sur 100 épisodes pour des statistiques stables
+# Attache le visualiseur si le rendu est actif
+if not HEADLESS and VIS_WIDTH > 0:
+    vis = NNVisualizer(env.screen, x_offset=env.w, width=VIS_WIDTH)
+    env.set_visualizer(vis)
+
+record       = 0
 score_window = deque(maxlen=100)
 
 for episode in range(1, EPISODES + 1):
@@ -27,23 +33,42 @@ for episode in range(1, EPISODES + 1):
     total_reward = 0
 
     while not done:
-        # Vider la file d'événements Pygame (ne pas bloquer)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 agent.save("best_model.pth")
                 pygame.quit()
                 quit()
+            # Touche V : bascule le panneau neurones
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_v:
+                if env.visualizer:
+                    env.visualizer = None
+                elif VIS_WIDTH > 0:
+                    env.visualizer = NNVisualizer(env.screen, x_offset=env.w, width=VIS_WIDTH)
 
-        action                    = agent.choose_action(state)
-        next_state, reward, done  = env.step(action)
+        # Action + Q-values pour le visualiseur
+        state_t  = torch.FloatTensor(state).unsqueeze(0)
+        agent.model.eval()
+        with torch.no_grad():
+            q_vals = agent.model(state_t).squeeze(0).numpy()
+        agent.model.train()
+
+        action = agent.choose_action(state)
+
+        next_state, reward, done = env.step(action)
         agent.remember(state, action, reward, next_state, done)
         agent.train()
+
+        if not HEADLESS and episode % RENDER_EVERY == 0:
+            env.render(
+                agent=agent,
+                state=state,
+                action=action,
+                q_values=q_vals,
+                episode=episode,
+            )
+
         state        = next_state
         total_reward += reward
-
-        # Rendu : toujours si non-headless, sinon 1 fois sur RENDER_EVERY
-        if not HEADLESS or episode % RENDER_EVERY == 0:
-            env.render()
 
     # Fin d'épisode
     agent.step_scheduler()
@@ -54,7 +79,6 @@ for episode in range(1, EPISODES + 1):
         record = env.score
         agent.save("best_model.pth")
 
-    # Log compact
     print(
         f"Ep {episode:5d} | "
         f"Score: {env.score:3d} | "

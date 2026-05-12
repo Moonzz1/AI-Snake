@@ -6,21 +6,40 @@ import random
 from collections import deque
 
 BLOCK = 20
+GAME_W = 400
+GAME_H = 400
 
 class SnakeEnv:
-    def __init__(self, w=400, h=400, headless=False):
-        self.w, self.h = w, h
-        self.headless = headless
+    def __init__(self, w=GAME_W, h=GAME_H, headless=False, vis_width=600):
+        """
+        w, h        : taille du plateau de jeu
+        headless    : True = pas de rendu (entraînement rapide)
+        vis_width   : largeur du panneau visualiseur (0 = désactivé)
+        """
+        self.w, self.h       = w, h
+        self.headless        = headless
+        self.vis_width       = vis_width if not headless else 0
+        self.total_width     = w + self.vis_width
+        self.visualizer      = None
+
         pygame.init()
         if not headless:
-            self.screen = pygame.display.set_mode((w, h))
+            self.screen = pygame.display.set_mode((self.total_width, h))
+            pygame.display.set_caption("AI Snake — Visualisation du réseau")
             self.clock  = pygame.time.Clock()
         else:
-            # Mode sans fenêtre pour entraînements rapides
             import os; os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
             pygame.display.init()
             self.screen = pygame.display.set_mode((w, h))
+
+        # Sous-surface dédiée au jeu
+        self.game_surf = pygame.Surface((w, h))
+
         self.reset()
+
+    def set_visualizer(self, vis):
+        """Attache le visualiseur de neurones (NNVisualizer)."""
+        self.visualizer = vis
 
     def reset(self):
         cx, cy = self.w // 2, self.h // 2
@@ -40,26 +59,20 @@ class SnakeEnv:
 
         reward, done = 0, False
 
-        # Mort (collision ou timeout)
         if self._collision() or self.frame_iter > 150 * len(self.snake):
-            # Pénalité graduée selon l'espace restant
             free = self._flood_fill(self.snake[0]) / ((self.w // BLOCK) * (self.h // BLOCK))
             return self._get_state(), -10 - 5 * (1 - free), True
 
-        # Mange la pomme
         if self.snake[0] == self.food:
-            self.score     += 1
-            reward          = 10 + 0.5 * self.score  # récompense croissante
-            self.food       = self._place_food()
-            self.prev_dist  = self._manhattan_to_food()
+            self.score    += 1
+            reward         = 10 + 0.5 * self.score
+            self.food      = self._place_food()
+            self.prev_dist = self._manhattan_to_food()
         else:
             self.snake.pop()
-            # Récompense de progression basée sur la distance
             curr_dist  = self._manhattan_to_food()
             reward     = 0.1 if curr_dist < self.prev_dist else -0.15
             self.prev_dist = curr_dist
-
-            # Pénalité légère si l'espace libre est faible (encourage la prudence)
             head_space = self._flood_fill(self.snake[0]) / ((self.w // BLOCK) * (self.h // BLOCK))
             if head_space < 0.2:
                 reward -= 0.05
@@ -67,71 +80,51 @@ class SnakeEnv:
         return self._get_state(), reward, done
 
     # ──────────────────────────────────────────
-    # État : 14 features + 4 features de danger à 2 pas
-    # ──────────────────────────────────────────
 
     def _get_state(self):
         head   = self.snake[0]
         dx, dy = self.direction
         total  = (self.w // BLOCK) * (self.h // BLOCK)
 
-        # Positions immédiates (1 case)
-        next_s = (head[0]+dx,        head[1]+dy)
-        next_r = (head[0]-dy,        head[1]+dx)
-        next_l = (head[0]+dy,        head[1]-dx)
+        next_s  = (head[0]+dx,     head[1]+dy)
+        next_r  = (head[0]-dy,     head[1]+dx)
+        next_l  = (head[0]+dy,     head[1]-dx)
+        next_s2 = (head[0]+2*dx,   head[1]+2*dy)
+        next_r2 = (head[0]-2*dy,   head[1]+2*dx)
+        next_l2 = (head[0]+2*dy,   head[1]-2*dx)
 
-        # Positions à 2 cases (anticipation)
-        next_s2 = (head[0]+2*dx,     head[1]+2*dy)
-        next_r2 = (head[0]-2*dy,     head[1]+2*dx)
-        next_l2 = (head[0]+2*dy,     head[1]-2*dx)
-
-        # Dangers immédiats
         danger_s  = float(self._collision_at(next_s))
         danger_r  = float(self._collision_at(next_r))
         danger_l  = float(self._collision_at(next_l))
-
-        # Dangers à 2 cases
         danger_s2 = float(self._collision_at(next_s2))
         danger_r2 = float(self._collision_at(next_r2))
         danger_l2 = float(self._collision_at(next_l2))
 
-        # Espace libre normalisé
         space_s = self._flood_fill(next_s) / total if not self._collision_at(next_s) else 0.0
         space_r = self._flood_fill(next_r) / total if not self._collision_at(next_r) else 0.0
         space_l = self._flood_fill(next_l) / total if not self._collision_at(next_l) else 0.0
 
-        # Peut-on atteindre la queue depuis la tête ?
         tail = self.snake[-1]
         can_reach_tail = float(self._can_reach(head, tail))
 
-        # Direction actuelle (one-hot)
         dir_r = float(dx > 0); dir_l = float(dx < 0)
         dir_u = float(dy < 0); dir_d = float(dy > 0)
 
-        # Position relative de la nourriture
         food_l = float(self.food[0] < head[0]); food_r = float(self.food[0] > head[0])
         food_u = float(self.food[1] < head[1]); food_d = float(self.food[1] > head[1])
 
-        # Distance normalisée à la nourriture
         food_dist = (abs(self.food[0]-head[0]) + abs(self.food[1]-head[1])) / (self.w + self.h)
-
-        # Longueur normalisée du serpent
         snake_len = len(self.snake) / total
 
         return np.array([
-            danger_s,  danger_r,  danger_l,          # 3 — danger immédiat
-            danger_s2, danger_r2, danger_l2,          # 3 — danger à 2 pas (NOUVEAU)
-            space_s,   space_r,   space_l,            # 3 — espace libre
-            can_reach_tail,                           # 1 — peut rejoindre sa queue (NOUVEAU)
-            dir_r, dir_l, dir_u, dir_d,               # 4 — direction
-            food_l, food_r, food_u, food_d,           # 4 — direction nourriture
-            food_dist,                                # 1 — distance normalisée (NOUVEAU)
-            snake_len,                                # 1 — taille normalisée (NOUVEAU)
-        ], dtype=np.float32)                          # 20 valeurs au total
-
-    # ──────────────────────────────────────────
-    # Méthodes internes
-    # ──────────────────────────────────────────
+            danger_s, danger_r, danger_l,
+            danger_s2, danger_r2, danger_l2,
+            space_s, space_r, space_l,
+            can_reach_tail,
+            dir_r, dir_l, dir_u, dir_d,
+            food_l, food_r, food_u, food_d,
+            food_dist, snake_len,
+        ], dtype=np.float32)
 
     def _collision(self):
         head = self.snake[0]
@@ -149,7 +142,6 @@ class SnakeEnv:
         )
 
     def _flood_fill(self, start):
-        """BFS — compte les cases accessibles depuis start."""
         if self._collision_at(start):
             return 0
         body    = set(self.snake)
@@ -168,10 +160,9 @@ class SnakeEnv:
         return len(visited)
 
     def _can_reach(self, start, target):
-        """Vérifie si 'target' est accessible depuis 'start' par BFS."""
         if self._collision_at(start):
             return False
-        body    = set(self.snake[1:])   # permet de passer là où la tête est déjà
+        body    = set(self.snake[1:])
         visited = set()
         queue   = deque([start])
         while queue:
@@ -213,14 +204,46 @@ class SnakeEnv:
             if pos not in self.snake:
                 return pos
 
-    def render(self):
+    def render(self, agent=None, state=None, action=None, q_values=None, episode=0):
+        """
+        Dessine le jeu + éventuellement le panneau neurones.
+        Paramètres optionnels pour la visualisation du réseau.
+        """
         if self.headless:
             return
-        self.screen.fill((0, 0, 0))
-        # Dégradé de vert pour le corps (tête plus claire)
+
+        # ── Jeu ──
+        self.game_surf.fill((10, 10, 15))
+        # Grille légère
+        for gx in range(0, self.w, BLOCK):
+            pygame.draw.line(self.game_surf, (20, 20, 28), (gx, 0), (gx, self.h))
+        for gy in range(0, self.h, BLOCK):
+            pygame.draw.line(self.game_surf, (20, 20, 28), (0, gy), (self.w, gy))
+
+        # Serpent avec dégradé
         for i, seg in enumerate(self.snake):
-            green = max(80, 200 - i * 3)
-            pygame.draw.rect(self.screen, (0, green, 0), (*seg, BLOCK, BLOCK))
-        pygame.draw.rect(self.screen, (220, 50, 50), (*self.food, BLOCK, BLOCK))
+            green = max(80, 210 - i * 4)
+            pygame.draw.rect(self.game_surf, (30, green, 60), (*seg, BLOCK-1, BLOCK-1))
+
+        # Pomme avec halo
+        fx, fy = self.food
+        pygame.draw.circle(self.game_surf, (180, 30, 30),
+                           (fx + BLOCK//2, fy + BLOCK//2), BLOCK//2 + 3)
+        pygame.draw.circle(self.game_surf, (240, 70, 70),
+                           (fx + BLOCK//2, fy + BLOCK//2), BLOCK//2)
+
+        # Score
+        font = pygame.font.SysFont("monospace", 16, bold=True)
+        sc = font.render(f"Score: {self.score}", True, (200, 200, 200))
+        self.game_surf.blit(sc, (8, 8))
+
+        self.screen.blit(self.game_surf, (0, 0))
+
+        # ── Visualiseur neurones ──
+        if self.visualizer and agent is not None and state is not None:
+            self.visualizer.update(state, agent.model, action or 0, q_values if q_values is not None else np.zeros(3))
+            self.visualizer.draw()
+            self.visualizer.update_stats(agent.epsilon, self.score, episode)
+
         pygame.display.flip()
         self.clock.tick(60)
